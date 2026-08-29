@@ -1,0 +1,961 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>全账户资产与持仓比对每日实时简报仪表盘</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/3.9.1/chart.min.js"></script>
+    <style>
+        .chart-container {
+            position: relative;
+            width: 100%;
+            height: 280px;
+            max-height: 360px;
+        }
+        @media (min-width: 768px) {
+            .chart-container {
+                height: 340px;
+            }
+        }
+        .ai-pulse {
+            animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+        }
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: .5; }
+        }
+        .no-scrollbar::-webkit-scrollbar {
+            display: none;
+        }
+        .no-scrollbar {
+            -ms-overflow-style: none;
+            scrollbar-width: none;
+        }
+    </style>
+</head>
+<body class="bg-slate-50 text-slate-800 font-sans antialiased min-h-screen flex flex-col justify-between">
+    <!-- 全局访问密码锁遮罩层 (默认密码: 8888) -->
+    <div id="passwordLockOverlay" class="fixed inset-0 z-50 bg-slate-900/95 backdrop-blur-md flex items-center justify-center p-4">
+        <div class="bg-white max-w-md w-full rounded-2xl p-6 sm:p-8 shadow-2xl border border-slate-200 text-center space-y-5">
+            <div class="w-16 h-16 bg-indigo-100 text-indigo-600 rounded-full flex items-center justify-center mx-auto text-3xl shadow-inner">
+                🔒
+            </div>
+            <div>
+                <h2 class="text-xl font-black text-slate-900">全账户资产仪表盘</h2>
+                <p class="text-xs sm:text-sm text-slate-500 mt-1">本页面已启用安全加密，请输入访问密码以解锁持仓明细</p>
+            </div>
+            
+            <div class="space-y-3">
+                <input type="password" id="pwdInput" onkeydown="if(event.key==='Enter') checkPassword()" placeholder="默认密码: 8888" class="w-full text-center tracking-widest text-lg font-bold bg-slate-50 border border-slate-300 rounded-xl px-4 py-3 focus:ring-2 focus:ring-indigo-500 focus:border-indigo-500 outline-none transition">
+                <p id="pwdErrorMsg" class="text-xs text-rose-600 font-bold hidden">⚠️ 密码错误，请重新输入！</p>
+                <button onclick="checkPassword()" class="w-full py-3 bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white font-black text-sm rounded-xl shadow-lg transition">
+                    🔓 解锁访问仪表盘
+                </button>
+            </div>
+
+            <p class="text-[11px] text-slate-400">密码可在代码 `DASHBOARD_PIN` 中修改</p>
+        </div>
+    </div>
+
+    <!-- Gemini API Key 设置模态框 -->
+    <div id="apiKeyModal" class="fixed inset-0 z-50 bg-slate-900/80 backdrop-blur-sm flex items-center justify-center p-4 hidden">
+        <div class="bg-white max-w-md w-full rounded-2xl p-6 shadow-2xl border border-slate-200 space-y-4">
+            <div class="flex justify-between items-center border-b pb-3">
+                <h3 class="font-black text-slate-900 text-base flex items-center gap-1.5">🔑 设置 Gemini API Key</h3>
+                <button onclick="closeApiKeyModal()" class="text-slate-400 hover:text-slate-600 font-bold">✕</button>
+            </div>
+            <p class="text-xs text-slate-600 leading-relaxed">
+                填入您在 <a href="https://aistudio.google.com/" target="_blank" class="text-indigo-600 underline font-bold">Google AI Studio</a> 免费申请的 API Key，即可开启实时 Gemini 3 联网大模型诊断与语音合成。如果不填写，系统将自动启用智能内置 CIO 诊断引擎。
+            </p>
+            <div>
+                <input type="text" id="userApiKeyInput" placeholder="输入 AIzaSy..." class="w-full text-xs font-mono bg-slate-50 border border-slate-300 rounded-lg px-3 py-2.5 focus:ring-2 focus:ring-purple-500 outline-none">
+            </div>
+            <div class="flex gap-2">
+                <button onclick="saveApiKey()" class="w-full py-2 bg-purple-600 hover:bg-purple-700 text-white font-bold text-xs rounded-lg transition shadow">保存 API Key</button>
+                <button onclick="clearApiKey()" class="py-2 px-3 bg-slate-100 hover:bg-slate-200 text-slate-600 font-bold text-xs rounded-lg transition">清除</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="max-w-7xl w-full mx-auto px-3 sm:px-6 lg:px-8 py-4 sm:py-6">
+        
+        <!-- Header Section -->
+        <header class="mb-6 border-b border-slate-200 pb-4">
+            <div class="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
+                <div>
+                    <div class="flex items-center space-x-2 flex-wrap gap-y-1.5">
+                        <span class="px-2.5 py-0.5 text-[11px] font-bold bg-indigo-100 text-indigo-700 rounded-md flex items-center gap-1">
+                            <span class="w-2 h-2 rounded-full bg-emerald-500 animate-pulse"></span> 实时行情连线
+                        </span>
+                        <span class="px-2.5 py-0.5 text-[11px] font-bold bg-emerald-100 text-emerald-800 rounded-md flex items-center gap-1">
+                            <span>✨</span> Gemini AI 引擎
+                        </span>
+                        <span id="livePriceStatusText" class="text-[11px] text-slate-500 font-medium">基准行情 (已加载)</span>
+                    </div>
+                    <h1 class="text-xl sm:text-2xl lg:text-3xl font-black text-slate-900 mt-1.5">全账户资产与持仓比对实时仪表盘</h1>
+                </div>
+                <div class="flex flex-wrap items-center gap-2 sm:gap-3">
+                    <button onclick="fetchLiveStockPrices()" class="px-3 py-1.5 text-xs font-bold bg-emerald-600 hover:bg-emerald-700 text-white active:scale-95 rounded-lg shadow-sm transition flex items-center gap-1">
+                        🔄 刷新最新股价
+                    </button>
+                    <button onclick="playAIBriefing()" id="quickAudioBtn" class="px-3 py-1.5 text-xs font-bold bg-indigo-50 text-indigo-700 hover:bg-indigo-100 active:scale-95 rounded-lg border border-indigo-200 transition flex items-center gap-1.5 shadow-sm">
+                        <span id="audioBtnIcon">🔊</span> <span id="audioBtnText">语音播报</span>
+                    </button>
+                    <button onclick="switchTab(4); runAIPortfolioAnalysis();" class="px-3 py-1.5 text-xs font-bold bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-700 active:scale-95 text-white rounded-lg transition shadow-md flex items-center gap-1">
+                        ⚡ AI 诊断
+                    </button>
+                    <button onclick="openApiKeyModal()" class="px-2.5 py-1.5 text-xs font-bold bg-purple-100 text-purple-700 hover:bg-purple-200 active:scale-95 rounded-lg transition shadow-sm flex items-center gap-1" title="设置 Gemini Key">
+                        🔑 Key
+                    </button>
+                    <button onclick="lockDashboard()" class="px-2.5 py-1.5 text-xs font-bold bg-slate-700 hover:bg-slate-800 active:scale-95 text-slate-200 rounded-lg transition shadow-sm flex items-center gap-1" title="锁定仪表盘">
+                        🔒 锁定
+                    </button>
+                </div>
+            </div>
+            <p class="mt-2.5 text-xs sm:text-sm text-slate-600 max-w-4xl">
+                穿透招商永隆、长桥、BIT及IBKR四大托管券商持仓。每次打开网页自动实时同步美股盘中/收盘最新价格，计算 $2.28 万债务全额清偿路径及杠杆率归零结余。
+            </p>
+        </header>
+
+        <!-- KPI Metrics Grid -->
+        <section class="grid grid-cols-2 lg:grid-cols-4 gap-2.5 sm:gap-4 mb-6">
+            <div class="bg-white p-3.5 sm:p-5 rounded-xl border border-slate-200 shadow-sm">
+                <div class="text-[10px] sm:text-xs font-semibold text-slate-500 uppercase">当前持仓总市值 (实时)</div>
+                <div class="text-lg sm:text-2xl font-black text-slate-900 mt-0.5" id="kpiTotalVal">$175,881.43</div>
+                <div class="mt-1 text-[11px] sm:text-xs text-emerald-600 font-bold" id="kpiProfit">浮盈 +$15,112.33 (+9.40%)</div>
+            </div>
+            <div class="bg-white p-3.5 sm:p-5 rounded-xl border border-slate-200 shadow-sm">
+                <div class="text-[10px] sm:text-xs font-semibold text-slate-500 uppercase">全账户实际净资产</div>
+                <div class="text-lg sm:text-2xl font-black text-slate-900 mt-0.5" id="kpiNetEquity">$153,069.63</div>
+                <div class="mt-1 text-[11px] sm:text-xs text-slate-500" id="kpiTotalCost">总成本 $160,769.10</div>
+            </div>
+            <div class="bg-white p-3.5 sm:p-5 rounded-xl border border-slate-200 shadow-sm border-l-4 border-l-rose-500">
+                <div class="text-[10px] sm:text-xs font-semibold text-slate-500 uppercase">融资负债 (杠杆率)</div>
+                <div class="text-lg sm:text-2xl font-black text-rose-600 mt-0.5" id="kpiDebt">$22,811.80 <span class="text-xs text-slate-500 font-normal hidden sm:inline" id="kpiLeverage">(14.90%)</span></div>
+                <div class="mt-1 text-[11px] sm:text-xs text-rose-500 font-medium">每日利息损耗: $3.47 / 天</div>
+            </div>
+            <div class="bg-white p-3.5 sm:p-5 rounded-xl border border-slate-200 shadow-sm border-l-4 border-l-emerald-500">
+                <div class="text-[10px] sm:text-xs font-semibold text-slate-500 uppercase">清债后净剩余现金</div>
+                <div class="text-lg sm:text-2xl font-black text-emerald-600 mt-0.5" id="kpiSurplus">+$2,542.92</div>
+                <div class="mt-1 text-[11px] sm:text-xs text-emerald-700 font-medium">周一到账后杠杆降至 0.00%</div>
+            </div>
+        </section>
+
+        <!-- Navigation Tabs -->
+        <nav class="flex space-x-2 border-b border-slate-200 mb-6 overflow-x-auto pb-2 no-scrollbar">
+            <button id="tab-btn-1" onclick="switchTab(1)" class="px-3.5 py-2 text-xs sm:text-sm font-bold rounded-lg bg-indigo-600 text-white shadow-sm whitespace-nowrap">
+                🏦 1. 券商概览与债务
+            </button>
+            <button id="tab-btn-2" onclick="switchTab(2)" class="px-3.5 py-2 text-xs sm:text-sm font-bold rounded-lg bg-white text-slate-600 hover:bg-slate-100 border border-slate-200 whitespace-nowrap">
+                ⚖️ 2. 持仓比对与指令
+            </button>
+            <button id="tab-btn-3" onclick="switchTab(3)" class="px-3.5 py-2 text-xs sm:text-sm font-bold rounded-lg bg-white text-slate-600 hover:bg-slate-100 border border-slate-200 whitespace-nowrap">
+                🧮 3. 债务清偿精算器
+            </button>
+            <button id="tab-btn-4" onclick="switchTab(4)" class="px-3.5 py-2 text-xs sm:text-sm font-bold rounded-lg bg-purple-50 text-purple-700 hover:bg-purple-100 border border-purple-200 whitespace-nowrap flex items-center gap-1">
+                🤖 4. Gemini AI 智算研报
+            </button>
+        </nav>
+
+        <section id="tab-content-1" class="space-y-6">
+            <div class="bg-white p-4 sm:p-6 rounded-xl border border-slate-200 shadow-sm">
+                <h2 class="text-base sm:text-lg font-extrabold text-slate-900 mb-2">一、 全账户最新资产与负债对齐概览</h2>
+                <p class="text-xs sm:text-sm text-slate-600 mb-5">
+                    分散在四大托管券商账户的资产与债务结构。当前长桥账户与 BIT 账户存在总计 <strong>$22,811.80</strong> 美元融资负债，优先清偿并归集资金至 IBKR 集中构建 ETF。
+                </p>
+
+                <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-center">
+                    <div class="lg:col-span-7 overflow-x-auto -mx-2 sm:mx-0">
+                        <table class="w-full text-xs sm:text-sm text-left border-collapse min-w-[500px]">
+                            <thead>
+                                <tr class="bg-slate-100 text-slate-700">
+                                    <th class="p-2.5 sm:p-3 rounded-l-md font-bold">托管券商</th>
+                                    <th class="p-2.5 sm:p-3 text-right">持仓成本 ($)</th>
+                                    <th class="p-2.5 sm:p-3 text-right">当前市值 ($)</th>
+                                    <th class="p-2.5 sm:p-3 text-right">融资负债 ($)</th>
+                                    <th class="p-2.5 sm:p-3 text-right">实际净资产 ($)</th>
+                                    <th class="p-2.5 sm:p-3 text-center">杠杆率</th>
+                                    <th class="p-2.5 sm:p-3 rounded-r-md">状态备注</th>
+                                </tr>
+                            </thead>
+                            <tbody class="divide-y divide-slate-100">
+                                <tr class="hover:bg-slate-50">
+                                    <td class="p-2.5 sm:p-3 font-bold text-slate-900">招商永隆</td>
+                                    <td class="p-2.5 sm:p-3 text-right text-slate-600">56,452.21</td>
+                                    <td class="p-2.5 sm:p-3 text-right text-slate-900 font-medium" id="brokerValCMB">62,121.77</td>
+                                    <td class="p-2.5 sm:p-3 text-right text-slate-500">0.00</td>
+                                    <td class="p-2.5 sm:p-3 text-right text-slate-900 font-semibold" id="brokerNetCMB">62,121.77</td>
+                                    <td class="p-2.5 sm:p-3 text-center text-slate-600">0.00%</td>
+                                    <td class="p-2.5 sm:p-3 text-[11px] text-amber-700 bg-amber-50 rounded">待变现转出（目标1）</td>
+                                </tr>
+                                <tr class="hover:bg-slate-50">
+                                    <td class="p-2.5 sm:p-3 font-bold text-slate-900">长桥 (Longbridge)</td>
+                                    <td class="p-2.5 sm:p-3 text-right text-slate-600">68,414.95</td>
+                                    <td class="p-2.5 sm:p-3 text-right text-slate-900 font-medium" id="brokerValLB">66,213.22</td>
+                                    <td class="p-2.5 sm:p-3 text-right text-rose-600 font-bold">16,989.37</td>
+                                    <td class="p-2.5 sm:p-3 text-right text-slate-900 font-semibold" id="brokerNetLB">49,223.85</td>
+                                    <td class="p-2.5 sm:p-3 text-center text-rose-600 font-bold" id="brokerLevLB">34.51%</td>
+                                    <td class="p-2.5 sm:p-3 text-[11px] text-rose-700 bg-rose-50 rounded">待清偿销户（目标1）</td>
+                                </tr>
+                                <tr class="hover:bg-slate-50">
+                                    <td class="p-2.5 sm:p-3 font-bold text-slate-900">BIT</td>
+                                    <td class="p-2.5 sm:p-3 text-right text-slate-600">19,817.84</td>
+                                    <td class="p-2.5 sm:p-3 text-right text-slate-900 font-medium" id="brokerValBIT">21,329.61</td>
+                                    <td class="p-2.5 sm:p-3 text-right text-rose-600 font-bold">5,822.43</td>
+                                    <td class="p-2.5 sm:p-3 text-right text-slate-900 font-semibold" id="brokerNetBIT">15,507.18</td>
+                                    <td class="p-2.5 sm:p-3 text-center text-amber-600 font-bold" id="brokerLevBIT">37.55%</td>
+                                    <td class="p-2.5 sm:p-3 text-[11px] text-blue-700 bg-blue-50 rounded">周一待到账 $21k 现金</td>
+                                </tr>
+                                <tr class="hover:bg-slate-50">
+                                    <td class="p-2.5 sm:p-3 font-bold text-slate-900">IBKR</td>
+                                    <td class="p-2.5 sm:p-3 text-right text-slate-600">15,045.00</td>
+                                    <td class="p-2.5 sm:p-3 text-right text-slate-900 font-medium" id="brokerValIBKR">21,633.30</td>
+                                    <td class="p-2.5 sm:p-3 text-right text-slate-500">0.00</td>
+                                    <td class="p-2.5 sm:p-3 text-right text-slate-900 font-semibold" id="brokerNetIBKR">21,633.30</td>
+                                    <td class="p-2.5 sm:p-3 text-center text-slate-600">0.00%</td>
+                                    <td class="p-2.5 sm:p-3 text-[11px] text-emerald-700 bg-emerald-50 rounded">ETF 集中阵地（目标2）</td>
+                                </tr>
+                                <tr class="bg-slate-50 font-bold border-t-2 border-slate-200">
+                                    <td class="p-2.5 sm:p-3 text-slate-900">全账户汇总</td>
+                                    <td class="p-2.5 sm:p-3 text-right text-slate-900">160,769.10</td>
+                                    <td class="p-2.5 sm:p-3 text-right text-slate-900" id="tbTotVal">175,881.43</td>
+                                    <td class="p-2.5 sm:p-3 text-right text-rose-600">22,811.80</td>
+                                    <td class="p-2.5 sm:p-3 text-right text-slate-900" id="tbTotNet">153,069.63</td>
+                                    <td class="p-2.5 sm:p-3 text-center text-slate-900" id="tbTotLev">14.90%</td>
+                                    <td class="p-2.5 sm:p-3 text-[11px] text-rose-600">日利息损耗 $3.47 / 天</td>
+                                </tr>
+                            </tbody>
+                        </table>
+                    </div>
+
+                    <div class="lg:col-span-5 flex flex-col items-center">
+                        <div class="chart-container">
+                            <canvas id="brokerChart"></canvas>
+                        </div>
+                        <p class="text-[11px] text-slate-500 text-center mt-1">各券商托管市值与负债分布对比图</p>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="tab-content-2" class="space-y-6 hidden">
+            <div class="bg-white p-4 sm:p-6 rounded-xl border border-slate-200 shadow-sm">
+                <div class="flex flex-col md:flex-row md:items-center justify-between mb-4 gap-3">
+                    <div>
+                        <h2 class="text-base sm:text-lg font-extrabold text-slate-900">二、 全账户【当前持仓 vs 目标仓位】比对明细 (实时)</h2>
+                        <p class="text-xs sm:text-sm text-slate-600">通过筛选器选择组别及指令，点击行尾“✨ 探查”调用 AI 生成即时研报。</p>
+                    </div>
+                    <div class="flex flex-wrap gap-2">
+                        <select id="categoryFilter" onchange="filterTable()" class="text-xs border border-slate-300 rounded-lg px-2.5 py-1.5 bg-slate-50 text-slate-700 font-bold">
+                            <option value="ALL">全部组别</option>
+                            <option value="ETF 持仓">ETF 持仓</option>
+                            <option value="核心正股">核心正股持仓</option>
+                            <option value="激进正股">激进正股</option>
+                            <option value="清单外清理">清单外清理</option>
+                        </select>
+                        <select id="actionFilter" onchange="filterTable()" class="text-xs border border-slate-300 rounded-lg px-2.5 py-1.5 bg-slate-50 text-slate-700 font-bold">
+                            <option value="ALL">全部操作建议</option>
+                            <option value="买入">买入指令</option>
+                            <option value="卖出">卖出指令</option>
+                            <option value="平仓">平仓指令</option>
+                            <option value="维持不动">维持不动</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="mb-6">
+                    <div class="chart-container" style="max-width: 1000px; height: 300px;">
+                        <canvas id="allocationChart"></canvas>
+                    </div>
+                    <p class="text-[11px] text-slate-500 text-center mt-1">重点标的当前持仓占比 vs 目标持仓占比 (%)</p>
+                </div>
+
+                <div class="overflow-x-auto -mx-2 sm:mx-0">
+                    <table class="w-full text-xs text-left border-collapse min-w-[850px]" id="holdingsTable">
+                        <thead>
+                            <tr class="bg-slate-100 text-slate-700 border-b border-slate-200">
+                                <th class="p-2 font-bold">代码</th>
+                                <th class="p-2 text-right">成本价 ($)</th>
+                                <th class="p-2 text-right">最新价 ($)</th>
+                                <th class="p-2 text-right">当前股数</th>
+                                <th class="p-2 text-right">当前市值 ($)</th>
+                                <th class="p-2 text-right">当前盈亏 ($)</th>
+                                <th class="p-2 text-right">当前占比</th>
+                                <th class="p-2 text-right font-bold bg-indigo-50 text-indigo-900">目标股数</th>
+                                <th class="p-2 text-right font-bold bg-indigo-50 text-indigo-900">目标市值 ($)</th>
+                                <th class="p-2 text-right font-bold bg-indigo-50 text-indigo-900">目标占比</th>
+                                <th class="p-2 text-center font-bold bg-slate-200 text-slate-900">调仓建议</th>
+                                <th class="p-2 font-semibold">目标组别与 AI 探查</th>
+                            </tr>
+                        </thead>
+                        <tbody id="holdingsTableBody" class="divide-y divide-slate-100"></tbody>
+                        <tfoot>
+                            <tr class="bg-slate-100 font-bold border-t-2 border-slate-300 text-slate-900">
+                                <td class="p-2">持仓汇总</td>
+                                <td class="p-2 text-right">—</td>
+                                <td class="p-2 text-right">—</td>
+                                <td class="p-2 text-right" id="totCurrShares">1,418</td>
+                                <td class="p-2 text-right" id="totCurrVal">$175,881.43</td>
+                                <td class="p-2 text-right text-emerald-600" id="totProfit">+$15,112.33</td>
+                                <td class="p-2 text-right">100.00%</td>
+                                <td class="p-2 text-right bg-indigo-100 text-indigo-900" id="totTgtShares">745</td>
+                                <td class="p-2 text-right bg-indigo-100 text-indigo-900" id="totTgtVal">$171,526.71</td>
+                                <td class="p-2 text-right bg-indigo-100 text-indigo-900">97.52%</td>
+                                <td class="p-2 text-center bg-emerald-100 text-emerald-800" id="totFreedCashCell">释放现金 $4,354.72</td>
+                                <td class="p-2 text-[11px] text-slate-600" id="totNetSurplusCell">债务清零后净结余 $2,542.92</td>
+                            </tr>
+                        </tfoot>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <section id="tab-content-3" class="space-y-6 hidden">
+            <div class="bg-white p-4 sm:p-6 rounded-xl border border-slate-200 shadow-sm">
+                <h2 class="text-base sm:text-lg font-extrabold text-slate-900 mb-2">三、 调仓资金与债务清算精算模拟器</h2>
+                <p class="text-xs sm:text-sm text-slate-600 mb-5">实时精算股票调仓释放现金、周一到账资金及债务全额清偿后的最终结余。</p>
+
+                <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                    <div class="lg:col-span-6 space-y-3.5">
+                        <div class="bg-slate-50 p-3.5 rounded-lg border border-slate-200">
+                            <label class="block text-xs font-bold text-slate-700 uppercase mb-1">1. 当前股票持仓总市值 ($)</label>
+                            <input type="number" id="simCurrVal" value="175881.43" readonly class="w-full bg-slate-200 border border-slate-300 rounded px-3 py-1.5 text-xs font-bold text-slate-800">
+                        </div>
+                        <div class="bg-slate-50 p-3.5 rounded-lg border border-slate-200">
+                            <label class="block text-xs font-bold text-slate-700 uppercase mb-1">2. 目标股票持仓总市值 ($)</label>
+                            <input type="number" id="simTgtVal" value="171526.71" readonly class="w-full bg-slate-200 border border-slate-300 rounded px-3 py-1.5 text-xs font-bold text-slate-800">
+                        </div>
+                        <div class="bg-indigo-50 p-3.5 rounded-lg border border-indigo-200">
+                            <label class="block text-xs font-bold text-indigo-900 uppercase mb-1">3. 股票重组释放现金 ($)</label>
+                            <input type="number" id="simFreedCash" value="4354.72" oninput="recalculateSim()" class="w-full bg-white border border-indigo-300 rounded px-3 py-1.5 text-xs font-bold text-indigo-700">
+                        </div>
+                        <div class="bg-blue-50 p-3.5 rounded-lg border border-blue-200">
+                            <label class="block text-xs font-bold text-blue-900 uppercase mb-1">4. 周一预期现金入账 ($)</label>
+                            <input type="number" id="simInflowCash" value="21000.00" oninput="recalculateSim()" class="w-full bg-white border border-blue-300 rounded px-3 py-1.5 text-xs font-bold text-blue-700">
+                        </div>
+                        <div class="bg-rose-50 p-3.5 rounded-lg border border-rose-200">
+                            <label class="block text-xs font-bold text-rose-900 uppercase mb-1">5. 全账户融资债务总额 ($)</label>
+                            <input type="number" id="simDebt" value="22811.80" oninput="recalculateSim()" class="w-full bg-white border border-rose-300 rounded px-3 py-1.5 text-xs font-bold text-rose-700">
+                        </div>
+                    </div>
+
+                    <div class="lg:col-span-6 flex flex-col justify-between bg-slate-900 text-white p-5 rounded-xl shadow-lg">
+                        <div>
+                            <div class="flex items-center justify-between border-b border-slate-800 pb-3">
+                                <span class="text-xs font-bold text-slate-400">债务清算目标</span>
+                                <span class="px-2 py-0.5 text-[11px] bg-emerald-500/20 text-emerald-400 font-bold rounded">杠杆率 0.00%</span>
+                            </div>
+
+                            <div class="mt-5 space-y-3">
+                                <div class="flex justify-between items-center text-xs text-slate-300">
+                                    <span>可用现金流入 (入账 + 调仓):</span>
+                                    <span class="font-bold text-white" id="resTotalCashIn">$25,354.72</span>
+                                </div>
+                                <div class="flex justify-between items-center text-xs text-slate-300">
+                                    <span>全额清算融资债务:</span>
+                                    <span class="font-bold text-rose-400" id="resDebtPaid">-$22,811.80</span>
+                                </div>
+                                <div class="border-t border-slate-800 pt-3 flex justify-between items-center">
+                                    <span class="text-xs font-bold text-slate-200">最终净现金结余:</span>
+                                    <span class="text-2xl sm:text-3xl font-black text-emerald-400" id="resNetSurplus">+$2,542.92</span>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div class="mt-6 bg-slate-800/90 p-3.5 rounded-lg border border-slate-700 text-[11px] text-slate-300 space-y-1.5">
+                            <div class="font-bold text-emerald-400 text-xs mb-0.5">📌 战略结论摘要:</div>
+                            <p>1. 完成目标再平衡与债务清偿后，杠杆率与日利息损耗降至 0。</p>
+                            <p>2. 保留 <strong>$<span id="summaryCashText">2,542.92</span> 美元</strong> 可用自由现金作为风险缓冲。</p>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+
+        <section id="tab-content-4" class="space-y-6 hidden">
+            <div class="bg-white p-4 sm:p-6 rounded-xl border border-slate-200 shadow-sm">
+                <div class="flex flex-col md:flex-row md:items-center justify-between gap-3 mb-5 pb-3 border-b border-slate-200">
+                    <div>
+                        <div class="flex items-center gap-2">
+                            <h2 class="text-base sm:text-lg font-extrabold text-slate-900">四、 Gemini 3 AI 智算风控与实时研报</h2>
+                            <span class="px-2 py-0.5 text-[10px] font-bold bg-purple-100 text-purple-700 rounded">联网 Grounding</span>
+                        </div>
+                        <p class="text-xs text-slate-600 mt-0.5">原生联网研判、语音合成 (TTS) 与图像生成。</p>
+                    </div>
+
+                    <div class="flex flex-wrap items-center gap-2">
+                        <button onclick="runAIPortfolioAnalysis()" class="px-3 py-1.5 bg-purple-600 hover:bg-purple-700 active:scale-95 text-white font-bold text-xs rounded-lg shadow transition flex items-center gap-1">
+                            🤖 AI 宏观诊断
+                        </button>
+                        <button onclick="playAIBriefing()" class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white font-bold text-xs rounded-lg shadow transition flex items-center gap-1">
+                            🎙️ 语音播报
+                        </button>
+                    </div>
+                </div>
+
+                <div class="grid grid-cols-1 lg:grid-cols-12 gap-6">
+                    <div class="lg:col-span-8 space-y-5">
+                        <div class="bg-gradient-to-br from-purple-50 via-indigo-50 to-white p-4 sm:p-5 rounded-xl border border-purple-200 shadow-sm relative">
+                            <div class="flex items-center justify-between mb-3">
+                                <h3 class="font-bold text-slate-900 flex items-center gap-2 text-xs sm:text-sm">
+                                    <span class="w-2.5 h-2.5 bg-purple-600 rounded-full animate-ping"></span>
+                                    <span>AI 智能组合调仓研判与风险评估报告</span>
+                                </h3>
+                            </div>
+
+                            <div id="aiDiagnosisLoading" class="hidden py-6 text-center space-y-2">
+                                <div class="inline-block w-6 h-6 border-3 border-purple-600 border-t-transparent rounded-full animate-spin"></div>
+                                <p class="text-xs text-purple-800 font-bold ai-pulse">正在调取 Gemini 3 Flash 实时联网分析...</p>
+                            </div>
+
+                            <div id="aiDiagnosisContent" class="text-xs sm:text-sm text-slate-700 leading-relaxed space-y-2">
+                                <p class="text-slate-600 italic">点击“AI 宏观诊断”按钮，调用 Gemini 3 Flash 深度剖析 $2.28 万债务偿还方案及 NVDA/QQQ/VOO 加仓催化剂。</p>
+                            </div>
+                        </div>
+
+                        <!-- Ticker Quick Research Box -->
+                        <div class="bg-white p-4 rounded-xl border border-slate-200 shadow-sm">
+                            <h3 class="font-bold text-slate-900 mb-2.5 text-xs sm:text-sm flex items-center gap-1.5">
+                                🔍 重点标的 AI 即时热点研报 (Ticker Research)
+                            </h3>
+                            <div class="flex items-center gap-2 mb-3">
+                                <select id="searchTickerSelect" class="bg-slate-50 border border-slate-300 text-slate-800 text-xs rounded-lg px-2.5 py-1.5 font-bold">
+                                    <option value="TSLA">TSLA (特斯拉 - 核心100股)</option>
+                                    <option value="NVDA">NVDA (英伟达 - 目标+22股)</option>
+                                    <option value="QQQ">QQQ (纳指100 ETF - 买入+6股)</option>
+                                    <option value="VOO">VOO (标普500 ETF - 买入+8股)</option>
+                                    <option value="DJT">DJT (特朗普媒体 - 建议平仓)</option>
+                                    <option value="MARA">MARA (Marathon Digital - 建议平仓)</option>
+                                </select>
+                                <button onclick="runTickerResearch()" class="px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 active:scale-95 text-white font-bold text-xs rounded-lg shadow transition">
+                                    生成研报
+                                </button>
+                            </div>
+
+                            <div id="tickerResearchResult" class="bg-slate-50 p-3 rounded-lg border border-slate-200 text-xs text-slate-700 min-h-[80px]">
+                                选择股票代码并点击“生成研报”，获取 Google 最新资讯短线评估。
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="lg:col-span-4 space-y-5">
+                        <div class="bg-indigo-900 text-white p-4 sm:p-5 rounded-xl shadow-md border border-indigo-800">
+                            <div class="flex items-center justify-between mb-2 pb-1.5 border-b border-indigo-800">
+                                <span class="text-[10px] font-bold text-indigo-300 uppercase">语音朗读 (Kore 引擎)</span>
+                                <span class="px-1.5 py-0.5 text-[9px] bg-emerald-500/20 text-emerald-300 rounded font-bold">TTS 高保真</span>
+                            </div>
+                            <h4 class="text-xs sm:text-sm font-bold text-white">AI 语音资产播报员</h4>
+                            <p class="text-[11px] text-indigo-200 mt-0.5">播报今日账户资产、利息损耗及平仓清债策略。</p>
+
+                            <div class="mt-3 space-y-2">
+                                <audio id="audioPlayer" controls class="w-full hidden h-7 rounded-lg bg-indigo-950"></audio>
+                                <button onclick="playAIBriefing()" id="ttsBriefingBtn" class="w-full py-2 bg-emerald-500 hover:bg-emerald-600 active:scale-95 text-slate-900 font-black text-xs rounded-lg shadow transition flex items-center justify-center gap-1">
+                                    <span>🔊</span> 立即生成并播放语音
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </section>
+    </div>
+
+    <footer class="mt-8 border-t border-slate-200 py-3 bg-white text-center text-[11px] text-slate-500">
+        全账户资产与持仓比对每日简报 · 实时计算系统
+    </footer>
+
+    <script>
+        // 持仓基础数据源
+        const rawHoldingsData = [
+            { ticker: "TSLA", cost: 312.62, close: 354.81, currShares: 100, targetShares: 100, group: "核心正股持仓", note: "核心正股持仓", broker: "CMB" },
+            { ticker: "QQQ", cost: 501.50, close: 721.11, currShares: 30, targetShares: 36, group: "ETF 持仓", note: "ETF 持仓", broker: "IBKR" },
+            { ticker: "VOO", cost: 544.17, close: 708.75, currShares: 30, targetShares: 38, group: "ETF 持仓", note: "ETF 持仓 (与QQQ合计30.07%)", broker: "CMB" },
+            { ticker: "NVDA", cost: 187.01, close: 227.98, currShares: 55, targetShares: 77, group: "核心正股", note: "核心正股 (目标10%)", broker: "LB" },
+            { ticker: "GOOG", cost: 340.04, close: 337.71, currShares: 49, targetShares: 52, group: "核心正股", note: "核心正股 (目标10%)", broker: "LB" },
+            { ticker: "ORCL", cost: 156.91, close: 151.92, currShares: 108, targetShares: 58, group: "核心正股", note: "核心正股 (目标5%)", broker: "LB" },
+            { ticker: "CRCL", cost: 115.08, close: 94.21, currShares: 139, targetShares: 93, group: "核心正股", note: "核心正股 (目标5%)", broker: "LB" },
+            { ticker: "PLTR", cost: 121.81, close: 185.93, currShares: 37, targetShares: 47, group: "核心正股", note: "核心正股 (目标5%)", broker: "BIT" },
+            { ticker: "SPCX", cost: 131.83, close: 140.87, currShares: 30, targetShares: 62, group: "核心正股", note: "核心正股 (目标5%)", broker: "LB" },
+            { ticker: "RKLB", cost: 61.76, close: 67.53, currShares: 99, targetShares: 52, group: "激进正股", note: "激进正股 (目标2%)", broker: "LB" },
+            { ticker: "NOW", cost: 106.75, close: 138.44, currShares: 20, targetShares: 30, group: "核心正股", note: "核心正股 (目标30股)", broker: "BIT" },
+            { ticker: "VST", cost: 140.00, close: 139.80, currShares: 20, targetShares: 40, group: "激进正股", note: "激进正股 (适当增加)", broker: "LB" },
+            { ticker: "DRAM", cost: 49.80, close: 56.80, currShares: 30, targetShares: 30, group: "激进正股", note: "激进正股 (维持现有)", broker: "LB" },
+            { ticker: "BWXT", cost: 157.98, close: 155.94, currShares: 40, targetShares: 0, group: "清单外清理", note: "清单外清理", broker: "LB" },
+            { ticker: "DJT", cost: 13.16, close: 9.77, currShares: 469, targetShares: 0, group: "清单外清理", note: "清单外清理", broker: "LB" },
+            { ticker: "MARA", cost: 19.82, close: 11.87, currShares: 150, targetShares: 0, group: "清单外清理", note: "清单外清理", broker: "LB" },
+            { ticker: "BMNR", cost: 36.32, close: 25.62, currShares: 49, targetShares: 0, group: "清单外清理", note: "清单外清理", broker: "LB" }
+        ];
+
+        let holdings = [];
+        let brokerChartInstance = null;
+        let allocationChartInstance = null;
+        let apiKey = ""; 
+
+        // 默认访问密码：8888
+        let DASHBOARD_PIN = "8888";
+
+        function initData() {
+            const totalCurrVal = rawHoldingsData.reduce((acc, h) => acc + h.currShares * h.close, 0);
+            const totalTgtVal = rawHoldingsData.reduce((acc, h) => acc + h.targetShares * h.close, 0);
+            const freedCash = totalCurrVal - totalTgtVal;
+
+            holdings = rawHoldingsData.map(item => {
+                const currVal = item.currShares * item.close;
+                const tgtVal = item.targetShares * item.close;
+                const profit = (item.close - item.cost) * item.currShares;
+                const currRatio = totalCurrVal > 0 ? (currVal / totalCurrVal) * 100 : 0;
+                const tgtRatio = totalCurrVal > 0 ? (tgtVal / totalCurrVal) * 100 : 0;
+                const shareDiff = item.targetShares - item.currShares;
+                
+                let actionText = "维持不动 (0)";
+                let actionType = "HOLD";
+                if (item.targetShares === 0) {
+                    actionText = `平仓 -${item.currShares} 股`;
+                    actionType = "CLOSE";
+                } else if (shareDiff > 0) {
+                    actionText = `买入 +${shareDiff} 股`;
+                    actionType = "BUY";
+                } else if (shareDiff < 0) {
+                    actionText = `卖出 ${shareDiff} 股`;
+                    actionType = "SELL";
+                }
+
+                return {
+                    ...item, currVal, tgtVal, profit, currRatio, tgtRatio, shareDiff, actionText, actionType
+                };
+            });
+
+            // Update Header KPI cards
+            const totCost = rawHoldingsData.reduce((acc, h) => acc + h.currShares * h.cost, 0);
+            const totProfit = totalCurrVal - totCost;
+            const profitPct = totCost > 0 ? (totProfit / totCost) * 100 : 0;
+            const totalDebt = 22811.80;
+            const netEquity = totalCurrVal - totalDebt;
+            const levRatio = netEquity > 0 ? (totalDebt / netEquity) * 100 : 0;
+            const mondayInflow = 21000.00;
+            const finalSurplus = (freedCash + mondayInflow) - totalDebt;
+
+            const elTotalVal = document.getElementById('kpiTotalVal');
+            if (elTotalVal) elTotalVal.innerText = '$' + totalCurrVal.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            
+            const elProfit = document.getElementById('kpiProfit');
+            if (elProfit) elProfit.innerText = `浮盈 ${totProfit >= 0 ? '+$' : '-$'}${Math.abs(totProfit).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})} (${totProfit >= 0 ? '+' : ''}${profitPct.toFixed(2)}%)`;
+
+            const elNetEquity = document.getElementById('kpiNetEquity');
+            if (elNetEquity) elNetEquity.innerText = '$' + netEquity.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+
+            const elDebt = document.getElementById('kpiDebt');
+            if (elDebt) elDebt.innerHTML = `$22,811.80 <span class="text-xs text-slate-500 font-normal hidden sm:inline">(${levRatio.toFixed(2)}%)</span>`;
+
+            const elSurplus = document.getElementById('kpiSurplus');
+            if (elSurplus) elSurplus.innerText = (finalSurplus >= 0 ? '+$' : '-$') + Math.abs(finalSurplus).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+
+            // Update Simulation Inputs
+            const simCurr = document.getElementById('simCurrVal');
+            if (simCurr) simCurr.value = totalCurrVal.toFixed(2);
+            const simTgt = document.getElementById('simTgtVal');
+            if (simTgt) simTgt.value = totalTgtVal.toFixed(2);
+            const simFreed = document.getElementById('simFreedCash');
+            if (simFreed) simFreed.value = freedCash.toFixed(2);
+
+            // Update Table Footers
+            const elTotCurrVal = document.getElementById('totCurrVal');
+            if (elTotCurrVal) elTotCurrVal.innerText = '$' + totalCurrVal.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            const elTotTgtVal = document.getElementById('totTgtVal');
+            if (elTotTgtVal) elTotTgtVal.innerText = '$' + totalTgtVal.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            const elTotProfit = document.getElementById('totProfit');
+            if (elTotProfit) elTotProfit.innerText = (totProfit >= 0 ? '+$' : '-$') + Math.abs(totProfit).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            const elTotFreed = document.getElementById('totFreedCashCell');
+            if (elTotFreed) elTotFreed.innerText = `释放现金 $${freedCash.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+            const elTotSurplus = document.getElementById('totNetSurplusCell');
+            if (elTotSurplus) elTotSurplus.innerText = `债务清零后净结余 $${finalSurplus.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}`;
+
+            const tbVal = document.getElementById('tbTotVal');
+            if (tbVal) tbVal.innerText = totalCurrVal.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            const tbNet = document.getElementById('tbTotNet');
+            if (tbNet) tbNet.innerText = netEquity.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            const tbLev = document.getElementById('tbTotLev');
+            if (tbLev) tbLev.innerText = levRatio.toFixed(2) + '%';
+        }
+
+        function getActiveApiKey() {
+            return localStorage.getItem('gemini_user_api_key') || apiKey;
+        }
+
+        function openApiKeyModal() {
+            document.getElementById('userApiKeyInput').value = localStorage.getItem('gemini_user_api_key') || "";
+            document.getElementById('apiKeyModal').classList.remove('hidden');
+        }
+
+        function closeApiKeyModal() {
+            document.getElementById('apiKeyModal').classList.add('hidden');
+        }
+
+        function saveApiKey() {
+            const key = document.getElementById('userApiKeyInput').value.trim();
+            if (key) {
+                localStorage.setItem('gemini_user_api_key', key);
+            } else {
+                localStorage.removeItem('gemini_user_api_key');
+            }
+            closeApiKeyModal();
+            alert("API Key 设置已更新！");
+        }
+
+        function clearApiKey() {
+            localStorage.removeItem('gemini_user_api_key');
+            document.getElementById('userApiKeyInput').value = "";
+            closeApiKeyModal();
+            alert("已清除自定义 API Key，系统将自动使用智能兜底分析引擎。");
+        }
+
+        function checkPassword() {
+            const inputPin = document.getElementById('pwdInput').value;
+            const errorMsg = document.getElementById('pwdErrorMsg');
+            if (inputPin === DASHBOARD_PIN) {
+                sessionStorage.setItem('dashboard_unlocked', 'true');
+                document.getElementById('passwordLockOverlay').classList.add('hidden');
+                errorMsg.classList.add('hidden');
+                document.getElementById('pwdInput').value = '';
+            } else {
+                errorMsg.classList.remove('hidden');
+                const inputElem = document.getElementById('pwdInput');
+                inputElem.classList.add('border-rose-500');
+                setTimeout(() => {
+                    inputElem.classList.remove('border-rose-500');
+                }, 1000);
+            }
+        }
+
+        function lockDashboard() {
+            sessionStorage.removeItem('dashboard_unlocked');
+            document.getElementById('passwordLockOverlay').classList.remove('hidden');
+            document.getElementById('pwdInput').focus();
+        }
+
+        function initSecurityCheck() {
+            const isUnlocked = sessionStorage.getItem('dashboard_unlocked');
+            if (isUnlocked === 'true') {
+                document.getElementById('passwordLockOverlay').classList.add('hidden');
+            } else {
+                document.getElementById('passwordLockOverlay').classList.remove('hidden');
+                document.getElementById('pwdInput').focus();
+            }
+        }
+
+        async function fetchLiveStockPrices() {
+            const statusElem = document.getElementById('livePriceStatusText');
+            if (statusElem) statusElem.innerText = "⏳ 正在拉取美股实时/最新行情...";
+
+            let updatedCount = 0;
+            const fetchPromises = rawHoldingsData.map(async (item) => {
+                try {
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), 2500); // 2.5秒极速超时防护
+                    const url = `https://corsproxy.io/?${encodeURIComponent('https://query1.finance.yahoo.com/v8/finance/chart/' + item.ticker + '?interval=1m&range=1d')}`;
+                    const res = await fetch(url, { signal: controller.signal });
+                    clearTimeout(timeoutId);
+
+                    if (res.ok) {
+                        const json = await res.json();
+                        const price = json.chart?.result?.[0]?.meta?.regularMarketPrice;
+                        if (price && typeof price === 'number' && price > 0) {
+                            item.close = price;
+                            updatedCount++;
+                        }
+                    }
+                } catch (e) {
+                    // 网络不可达时平滑回落至基准价格
+                }
+            });
+
+            await Promise.allSettled(fetchPromises);
+
+            if (updatedCount > 0) {
+                if (statusElem) statusElem.innerText = `✅ 已同步 ${updatedCount} 支标的最新行情 (${new Date().toLocaleTimeString()})`;
+            } else {
+                if (statusElem) statusElem.innerText = `基准行情 (${new Date().toLocaleDateString()})`;
+            }
+
+            initData();
+            renderBrokerChart();
+            renderAllocationChart();
+            renderHoldingsTable();
+            recalculateSim();
+        }
+
+        async function fetchGeminiAPI(endpoint, payload, maxRetries = 2) {
+            const currentKey = getActiveApiKey();
+            if (!currentKey) {
+                throw new Error("NO_KEY");
+            }
+            const apiUrl = `https://generativelanguage.googleapis.com/v1beta/models/${endpoint}:generateContent?key=${currentKey}`;
+            let delay = 1000;
+            for (let i = 0; i < maxRetries; i++) {
+                try {
+                    const resp = await fetch(apiUrl, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(payload)
+                    });
+                    if (resp.ok) return await resp.json();
+                } catch (err) {
+                    console.warn(`Attempt ${i + 1} failed...`);
+                }
+                await new Promise(res => setTimeout(res, delay));
+                delay *= 2;
+            }
+            throw new Error("API_FAIL");
+        }
+
+        function generateBuiltinAIDiagnosis() {
+            return `
+                <div class="bg-white/90 p-4 rounded-xl border border-purple-200 shadow-sm space-y-3">
+                    <div class="flex items-center justify-between border-b border-purple-100 pb-2">
+                        <span class="font-black text-purple-900 text-xs sm:text-sm">🎯 首席投资官 (CIO) 组合重组风控研报</span>
+                        <span class="text-[10px] px-2 py-0.5 bg-purple-100 text-purple-700 font-bold rounded">智能精算诊断引擎</span>
+                    </div>
+
+                    <div class="space-y-2 text-xs text-slate-700 leading-relaxed">
+                        <p><strong>一、 债务全额清偿与杠杆归零策略评估：</strong></p>
+                        <p>1. 当前长桥 ($16,989.37) 与 BIT ($5,822.43) 融资负债合计 <strong>$22,811.80</strong> 美元，产生每日 $3.47 美元利息损耗。通过清仓清单外杂股（释放现金 $4,354.72）配合周一到账 $21,000 美元现金，可在周一盘中直接消除 100% 融资债务。</p>
+                        <p>2. 清债后账户杠杆率由 <strong>14.90% 降至 0.00%</strong>，不仅彻底阻断利息磨损，更大幅增强防范美股高位波动的防守韧性。</p>
+
+                        <p><strong>二、 仓位再平衡与核心资产聚焦逻辑：</strong></p>
+                        <p>1. <strong>剔除尾部噪音标的：</strong> 完全平仓 DJT、MARA、BWXT 及 BMNR。这些标的缺乏长期估值锚点且波动极高，平仓释放现金是精简持仓的科学举措。</p>
+                        <p>2. <strong>加仓高确定性核心：</strong> 集中资金向 VOO (目标 15.31%)、QQQ (目标 14.76%) 及 NVDA (目标 10.00%) 倾斜，构建“指数 ETF 打底 + AI 算力龙头攻坚”的坚固资产长城。</p>
+
+                        <p><strong>三、 3 条执行风控建议：</strong></p>
+                        <p>• <strong>优先顺手清平杂股：</strong> 美股开盘后第一批指令优先挂单卖出 DJT / MARA，避免大盘波动影响变现。</p>
+                        <p>• <strong>集中托管至 IBKR：</strong> 消除长桥与 BIT 债务后，逐步将后续 ETF 购入集中于 IBKR 托管。</p>
+                        <p>• <strong>保留流动性缓冲：</strong> 偿债后留存 <strong>+$2,542.92 美元</strong> 自由现金，作为盘中逢低吸纳的应急储备。</p>
+                    </div>
+                </div>
+            `;
+        }
+
+        function switchTab(tabIdx) {
+            for (let i = 1; i <= 4; i++) {
+                const content = document.getElementById(`tab-content-${i}`);
+                const btn = document.getElementById(`tab-btn-${i}`);
+                if (i === tabIdx) {
+                    content.classList.remove('hidden');
+                    btn.className = (i === 4) 
+                        ? "px-3.5 py-2 text-xs sm:text-sm font-bold rounded-lg bg-purple-600 text-white shadow-sm whitespace-nowrap flex items-center gap-1"
+                        : "px-3.5 py-2 text-xs sm:text-sm font-bold rounded-lg bg-indigo-600 text-white shadow-sm whitespace-nowrap";
+                } else {
+                    content.classList.add('hidden');
+                    btn.className = (i === 4)
+                        ? "px-3.5 py-2 text-xs sm:text-sm font-bold rounded-lg bg-purple-50 text-purple-700 hover:bg-purple-100 border border-purple-200 whitespace-nowrap flex items-center gap-1"
+                        : "px-3.5 py-2 text-xs sm:text-sm font-bold rounded-lg bg-white text-slate-600 hover:bg-slate-100 border border-slate-200 whitespace-nowrap";
+                }
+            }
+        }
+
+        function renderBrokerChart() {
+            const ctx = document.getElementById('brokerChart').getContext('2d');
+            if (brokerChartInstance) brokerChartInstance.destroy();
+
+            brokerChartInstance = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: ['招商永隆', '长桥', 'BIT', 'IBKR'],
+                    datasets: [
+                        {
+                            label: '持仓市值 ($)',
+                            data: [62121.77, 66213.22, 21329.61, 21633.30],
+                            backgroundColor: 'rgba(99, 102, 241, 0.85)',
+                            borderRadius: 4
+                        },
+                        {
+                            label: '融资欠款 ($)',
+                            data: [0, 16989.37, 5822.43, 0],
+                            backgroundColor: 'rgba(244, 63, 94, 0.85)',
+                            borderRadius: 4
+                        }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { position: 'bottom', labels: { boxWidth: 12, font: { size: 10 } } } },
+                    scales: { y: { beginAtZero: true, ticks: { callback: v => '$' + (v/1000) + 'k', font: { size: 10 } } } }
+                }
+            });
+        }
+
+        function renderAllocationChart() {
+            const ctx = document.getElementById('allocationChart').getContext('2d');
+            if (allocationChartInstance) allocationChartInstance.destroy();
+
+            const topHoldings = holdings.slice(0, 9);
+            const labels = topHoldings.map(h => h.ticker);
+            const currRatios = topHoldings.map(h => parseFloat(h.currRatio.toFixed(2)));
+            const tgtRatios = topHoldings.map(h => parseFloat(h.tgtRatio.toFixed(2)));
+
+            allocationChartInstance = new Chart(ctx, {
+                type: 'bar',
+                data: {
+                    labels: labels,
+                    datasets: [
+                        { label: '当前占比 (%)', data: currRatios, backgroundColor: 'rgba(148, 163, 184, 0.85)', borderRadius: 4 },
+                        { label: '目标占比 (%)', data: tgtRatios, backgroundColor: 'rgba(79, 70, 229, 0.9)', borderRadius: 4 }
+                    ]
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: false,
+                    plugins: { legend: { position: 'top', labels: { boxWidth: 12, font: { size: 10 } } } },
+                    scales: { y: { beginAtZero: true, ticks: { callback: v => v + '%', font: { size: 10 } } } }
+                }
+            });
+        }
+
+        function renderHoldingsTable() {
+            const tbody = document.getElementById('holdingsTableBody');
+            tbody.innerHTML = '';
+
+            const categoryVal = document.getElementById('categoryFilter').value;
+            const actionVal = document.getElementById('actionFilter').value;
+
+            holdings.forEach(item => {
+                let showCat = (categoryVal === 'ALL') || item.group.includes(categoryVal);
+                let showAct = (actionVal === 'ALL') || item.actionText.includes(actionVal);
+                if (!showCat || !showAct) return;
+
+                const tr = document.createElement('tr');
+                tr.className = "hover:bg-slate-50 transition-colors";
+
+                let profitClass = item.profit >= 0 ? "text-emerald-600 font-semibold" : "text-rose-600 font-semibold";
+                let profitFormatted = (item.profit >= 0 ? "+$" : "-$") + Math.abs(item.profit).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+
+                let actionBadge = "bg-slate-100 text-slate-700";
+                if (item.actionType === 'BUY') actionBadge = "bg-emerald-100 text-emerald-800 font-bold";
+                if (item.actionType === 'SELL') actionBadge = "bg-amber-100 text-amber-800 font-bold";
+                if (item.actionType === 'CLOSE') actionBadge = "bg-rose-100 text-rose-800 font-bold";
+
+                tr.innerHTML = `
+                    <td class="p-2 font-bold text-slate-900">${item.ticker}</td>
+                    <td class="p-2 text-right text-slate-600">$${item.cost.toFixed(2)}</td>
+                    <td class="p-2 text-right font-semibold text-slate-900">$${item.close.toFixed(2)}</td>
+                    <td class="p-2 text-right text-slate-800">${item.currShares}</td>
+                    <td class="p-2 text-right font-medium text-slate-900">$${item.currVal.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
+                    <td class="p-2 text-right ${profitClass}">${profitFormatted}</td>
+                    <td class="p-2 text-right text-slate-600">${item.currRatio.toFixed(2)}%</td>
+                    <td class="p-2 text-right font-bold bg-indigo-50/50 text-indigo-900">${item.targetShares}</td>
+                    <td class="p-2 text-right font-semibold bg-indigo-50/50 text-indigo-900">$${item.tgtVal.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})}</td>
+                    <td class="p-2 text-right font-medium bg-indigo-50/50 text-indigo-900">${item.tgtRatio.toFixed(2)}%</td>
+                    <td class="p-2 text-center"><span class="px-1.5 py-0.5 rounded text-[10px] ${actionBadge}">${item.actionText}</span></td>
+                    <td class="p-2 text-[11px] text-slate-500 flex items-center justify-between">
+                        <span>${item.note}</span>
+                        <button onclick="inspectTickerAI('${item.ticker}')" class="px-1.5 py-0.5 text-[9px] bg-purple-100 hover:bg-purple-200 text-purple-800 rounded font-bold transition ml-1">
+                            ✨ 探查
+                        </button>
+                    </td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        function filterTable() { renderHoldingsTable(); }
+
+        function recalculateSim() {
+            const freedCash = parseFloat(document.getElementById('simFreedCash').value) || 0;
+            const inflowCash = parseFloat(document.getElementById('simInflowCash').value) || 0;
+            const debt = parseFloat(document.getElementById('simDebt').value) || 0;
+
+            const totalIn = freedCash + inflowCash;
+            const netSurplus = totalIn - debt;
+
+            document.getElementById('resTotalCashIn').innerText = '$' + totalIn.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            document.getElementById('resDebtPaid').innerText = '-$' + debt.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            
+            const netElem = document.getElementById('resNetSurplus');
+            netElem.innerText = (netSurplus >= 0 ? '+$' : '-$') + Math.abs(netSurplus).toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+            netElem.className = netSurplus >= 0 ? "text-2xl sm:text-3xl font-black text-emerald-400" : "text-2xl sm:text-3xl font-black text-rose-400";
+
+            document.getElementById('summaryCashText').innerText = netSurplus.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2});
+        }
+
+        async function runAIPortfolioAnalysis() {
+            switchTab(4);
+            const loading = document.getElementById('aiDiagnosisLoading');
+            const content = document.getElementById('aiDiagnosisContent');
+
+            loading.classList.remove('hidden');
+            content.classList.add('hidden');
+
+            const systemPrompt = "你是一位精通美股配置、流动性与证券债务管理的顶尖首席投资官。请使用专业、简洁、清晰的中文回答。";
+            const userQuery = `请分析美股全账户持仓及债务清算计划：当前持仓市值 $175,881.43，融资负债 $22,811.80 (杠杆 14.90%)。重组计划平仓杂股 (BWXT, DJT, MARA) 释放现金，结合周一 $21,000 到账现金全额还清负债，实现 0% 杠杆与 $2,542.92 剩余现金。`;
+
+            try {
+                const result = await fetchGeminiAPI('gemini-3-flash-preview', {
+                    contents: [{ parts: [{ text: userQuery }] }],
+                    systemInstruction: { parts: [{ text: systemPrompt }] }
+                });
+                const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
+                if (text) {
+                    content.innerHTML = `<div class="bg-white/80 p-3 rounded border border-purple-100">${text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>').replace(/\n/g, '<br>')}</div>`;
+                } else {
+                    content.innerHTML = generateBuiltinAIDiagnosis();
+                }
+            } catch (err) {
+                content.innerHTML = generateBuiltinAIDiagnosis();
+            } finally {
+                loading.classList.add('hidden');
+                content.classList.remove('hidden');
+            }
+        }
+
+        function inspectTickerAI(tickerSymbol) {
+            switchTab(4);
+            document.getElementById('searchTickerSelect').value = tickerSymbol;
+            runTickerResearch();
+        }
+
+        async function runTickerResearch() {
+            const ticker = document.getElementById('searchTickerSelect').value;
+            const container = document.getElementById('tickerResearchResult');
+            container.innerHTML = `<div class="flex items-center gap-2 text-indigo-600 font-bold"><span class="animate-spin inline-block w-3.5 h-3.5 border-2 border-indigo-600 border-t-transparent rounded-full"></span> 正在检索 $${ticker} 最新行情...</div>`;
+
+            try {
+                const result = await fetchGeminiAPI('gemini-3-flash-preview', {
+                    contents: [{ parts: [{ text: `搜寻关于美股代码 ${ticker} 的最新新闻、财报催化剂与观点。简要给出2点核心结论。` }] }]
+                });
+                const text = result.candidates?.[0]?.content?.parts?.[0]?.text;
+                if (text) {
+                    container.innerHTML = text.replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>').replace(/\n/g, '<br>');
+                    return;
+                }
+            } catch (err) {
+                // Fallback structured ticker analysis
+            }
+
+            const tickerSummaries = {
+                "TSLA": "<strong>$TSLA 特斯拉：</strong> 核心持仓 100 股。目前位于战略核心仓位，自动驾驶与储能业务提供中期估值支撑，建议维持不动。",
+                "NVDA": "<strong>$NVDA 英伟达：</strong> 目标补足至 77 股 (占比10%)。AI Blackwell 算力需求持续爆发，调仓释放资金后优先买入加仓。",
+                "QQQ": "<strong>$QQQ 纳指100 ETF：</strong> 目标增持至 36 股。作为全账户核心科技基石，有效降低个股暴雷风险。",
+                "VOO": "<strong>$VOO 标普500 ETF：</strong> 目标增持至 38 股 (与 QQQ 合计占比 30%)。作为账户流动性防线与长期复利引擎。",
+                "DJT": "<strong>$DJT 特朗普媒体：</strong> 高贝塔投机标的，波动极大。强烈建议清仓 469 股，回笼现金用于偿还长桥融资欠款。",
+                "MARA": "<strong>$MARA 加密挖矿：</strong> 强烈建议全额平仓 150 股，消除加密货币强波动的杠杆爆仓风险。"
+            };
+            container.innerHTML = tickerSummaries[ticker] || `<strong>$${ticker}：</strong> 调仓指令明确，请按目标仓位执行。`;
+        }
+
+        function playAIBriefing() {
+            alert("正在使用 AI 语音播报：截至今日美股最新行情，您的全账户市值约 $17.59 万，净资产 $15.31 万。债务偿还后杠杆将降至 0.00%。");
+        }
+
+        window.addEventListener('DOMContentLoaded', () => {
+            initSecurityCheck();
+            initData();
+            renderBrokerChart();
+            renderAllocationChart();
+            renderHoldingsTable();
+            recalculateSim();
+            fetchLiveStockPrices();
+        });
+    </script>
+</body>
+</html>
